@@ -21,6 +21,8 @@ library("tmap") # to map raster data/background map
 library("igraph")
 library("tidygraph")
 library("ggraph")
+library(forecast)
+
 ```
 
 # Data Preparation
@@ -45,7 +47,6 @@ shp_node_ny <- read_sf("data/network-analysis/shapefile/newyork/newyork_nodes.sh
 shp_street_ny <- read_sf("data/network-analysis/shapefile/newyork/newyork_street.shp")
 ```
 
-
 # Task 1: Explore the Data
 ## 1.1 Passenger Data
 ```{r prep passenger }
@@ -58,15 +59,7 @@ passengers <- passengers |>
 
 ```
 
-```{r Explore passengers}
-summary(passengers)
 
-#Visualize Data
-ggplot(passengers,aes(x = date, y = passengers)) + 
-  geom_point() +
-  geom_smooth(method = "lm", col = "red") +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 4))
-```
 ## 1.2 Pedestrians
 ```{r prep pedestrians}
 #Rename Columnsreate summary, add Id for visualisation with trend
@@ -76,37 +69,25 @@ pedestrians <- pedestrians |>
   mutate(id = row_number())
 ```
 
-```{r Explore pedestrians}
-summary(pedestrians)
 
-#Visualize Data
-ggplot(pedestrians,aes(x = date, y = total)) + 
-  geom_point() +
-  geom_smooth(method = "gam", col = "red") +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 10))
-```
 ## 1.3 Shapefiles
 ### 1.3.1 Read Shapefiles
 
 ```{r prep shp}
 shp_node_ny <- shp_node_ny |>
-  rename(street_count = street_cou) |>
-  mutate(id = row_number())
+  rename(street_count = street_cou)
 
 shp_street_ny <- shp_street_ny |>
   rename(from = from_,) |>
   mutate(id = row_number())
 
-shp_node_zh |>
-  rename(street_count = street_cou) |>
-  mutate(id = row_number())
+shp_node_zh <- shp_node_zh |>
+  rename(street_count = street_cou) 
   
-
 shp_street_zh <- shp_street_zh |>
   rename(from = from_,) |>
   mutate(id = row_number())
   
-
 ```
 
 ### 1.3.2 Remove Double streets
@@ -136,10 +117,13 @@ csv_street_zh <- csv_street_zh |>
 ## 1.4 Visualise SHP
 ### 1.4.1 New York
 
-```{r NY SHP}
+```{r}
 #Set tmap_mode to "view" to get an interactive map
 tmap_mode("plot")
+```
 
+
+```{r NY SHP}
 tm_shape(shp_node_ny) +
   tm_dots() +
   tm_shape(shp_street_ny) +
@@ -159,114 +143,577 @@ tm_shape(shp_node_zh) +
 
 
 # Task 2: Network Analysis (50 points)
+## 2.1 Create Street Graphs and dual Graphs (5 points)
+## 2.2 Centrality (degree, closeness, betweenness) Calculation of the Graphs (15 points)
+## 2.3 Visual and Numerical Analytics (30 points)
 
-## 2.1 Create Street Grapshg and dual Graphs (5 points)
+```{r preparation}
+# Use start end combination as id
+csv_street_ny <- csv_street_ny |> mutate(s_e = paste0(pmin(s, e), pmax(s, e)))
+csv_street_zh <- csv_street_zh |> mutate(s_e = paste0(pmin(s, e), pmax(s, e)))
+
+ny <- csv_street_ny |>
+  arrange(seg_length) |>
+  distinct(s_e, .keep_all=TRUE)
+
+zh <- csv_street_zh |>
+  arrange(seg_length) |>
+  distinct(s_e, .keep_all=TRUE)
+
+```
 
 ### 2.1.1 Undirected Unweighted Street Graph
 
+```{r undirected unweighted street graphs}
+# edge information
+ny_edge <- data.frame(from=ny$s, to=ny$e, weight=ny$seg_length)
+zh_edge <- data.frame(from=zh$s, to=zh$e, weight=zh$seg_length)
+
+# node information
+ny_node <- union(ny$s, ny$e)
+zh_node <- union(zh$s, zh$e)
+
+# Creating the street graphs
+ny_street <- graph_from_data_frame(vertices=ny_node, d=ny_edge, directed=FALSE) |> as_tbl_graph()
+zh_street <- graph_from_data_frame(vertices=zh_node, d=zh_edge, directed=FALSE) |> as_tbl_graph()
+
+```
+
+```{r}
+zh_street_unweighted <- zh_street |>
+  mutate(degree = centrality_degree(weights=NULL),           # degree centrality
+         closeness = centrality_closeness(weights=NULL),     # closeness centrality
+         betweenness = centrality_betweenness(weights=NULL)) # betweenness centrality
+
+ny_street_unweighted <- ny_street |>
+  mutate(degree = centrality_degree(weights=NULL),           # degree centrality
+         closeness = centrality_closeness(weights=NULL),     # closeness centrality
+         betweenness = centrality_betweenness(weights=NULL)) # betweenness centrality
+```
+
+```{r}
+zh_nodes_street_unweighted <- zh_street_unweighted |> 
+  activate(nodes) |> 
+  data.frame() |> 
+  mutate(name=as.numeric(name))
+
+ny_nodes_street_unweighted <- ny_street_unweighted |> 
+  activate(nodes) |> 
+  data.frame() |> 
+  mutate(name=as.numeric(name))
+
+```
+
+```{r}
+sf_nodes_zh_street_unweighted <- shp_node_zh |> 
+  left_join(zh_nodes_street_unweighted, by=c("osmid"="name"))
+
+sf_nodes_ny_street_unweighted <- shp_node_ny |> 
+  left_join(ny_nodes_street_unweighted, by=c("osmid"="name"))
+```
+
+```{r}
+zh_plot_street_unweighted <- ggplot() + 
+  geom_sf(data=shp_street_zh, size=0.25) +
+  geom_sf(data=sf_nodes_zh_street_unweighted, aes(col=as.factor(degree)), size=0.5) +
+  scale_color_brewer(palette="YlOrRd") +
+  labs(title="Zurich: Unweighted street graph", col="degree centrality") +
+  theme_dark() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ny_plot_street_unweighted <- ggplot() + 
+  geom_sf(data=shp_street_ny, size=0.25) +
+  geom_sf(data=sf_nodes_ny_street_unweighted, aes(col=as.factor(degree)), size=0.5) +
+  scale_color_brewer(palette="YlOrRd") +
+  labs(title="New York: Unweighted street graph", col="degree centrality") +
+  theme_dark()
+
+zh_plot_street_unweighted
+ny_plot_street_unweighted 
+```
+
+```{r}
+
+zh_plot_street_unweighted <- ggplot() + 
+  geom_sf(data=shp_street_zh, size=0.25) +
+  geom_sf(data=sf_nodes_zh_street_unweighted, aes(col=closeness), size=0.5) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 0.00004) +
+  labs(title="Zurich: Unweighted street graph", col="closeness centrality") +
+  theme_dark() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ny_plot_street_unweighted <- ggplot() + 
+  geom_sf(data=shp_street_ny, size=0.25) +
+  geom_sf(data=sf_nodes_ny_street_unweighted, aes(col=closeness), size=0.5) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 0.2) +
+  labs(title="New York: Unweighted street graph", col="closeness centrality") +
+  theme_dark()
 
 
-```{r undirected unweighted street graph zh}
-edges_zh <- csv_street_zh |>
-  select(s, e, seg_length) |>
-  as_tibble()
+zh_plot_street_unweighted
+ny_plot_street_unweighted 
+```
 
-graph_zh <- tbl_graph(edges_zh, directed = F)
+```{r}
+zh_plot_street_unweighted <- ggplot() + 
+  geom_sf(data=shp_street_zh, size=0.25) +
+  geom_sf(data=sf_nodes_zh_street_unweighted, aes(col=betweenness), size=0.5) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 100000) +
+  labs(title="Zurich: Unweighted street graph", col="betweenness centrality") +
+  theme_dark() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-nodes_zh <- union(edges_zh$s,edges_zh$e)
+ny_plot_street_unweighted <- ggplot() + 
+  geom_sf(data=shp_street_ny, size=0.25) +
+  geom_sf(data=sf_nodes_ny_street_unweighted, aes(col=betweenness), size=0.5) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 400000) +
+  labs(title="New York: Unweighted street graph", col="betweenness centrality") +
+  theme_dark()
 
-edges_zh |> ggraph(layout = 'kk') +
-  geom_edge_link() +
-  geom_node_point(size = 1, colour = "steelblue") +
-  theme_graph()
+
+zh_plot_street_unweighted
+ny_plot_street_unweighted 
+```
+
+# 2.1.2 Dual Graph
+
+```{r}
+create_dual_graph <- function(data) {
+  node <- data$FID
+  edges <- data.frame(from = numeric(), to = numeric())
+
+  # Test all posibilites. 
+  for (FID1 in 1:length(node)) {
+    for (FID2 in FID1:length(node)) {
+      if (FID1 != FID2) { # Dont match to identical points
+        FID1_s <- data$s[FID1]
+        FID1_e <- data$e[FID1]
+        FID2_s <- data$s[FID2]
+        FID2_e <- data$e[FID2]
+
+        if ((FID1_s == FID2_s) || (FID1_s == FID2_e) || (FID1_e == FID2_s) || (FID1_e == FID2_e)) {
+          edges <- rbind(edges, data.frame(from = data$FID[FID1], to = data$FID[FID2]))
+        }}}}
+
+  edges <- edges |>
+    mutate(s_e = paste0(pmin(from, to), pmax(from, to))) |>
+    distinct(s_e, .keep_all = TRUE) |>
+    select(from, to)
+
+  graph <- graph_from_data_frame(d = edges, vertices = node, directed = FALSE) |>
+    as_tbl_graph()
+
+  return(graph)
+}
+
+```
+
+```{r}
+ny_dual <- create_dual_graph(ny)
+zh_dual <- create_dual_graph(zh)
+```
+
+```{r}
+zh_dual <- zh_dual |>
+  mutate(degree = centrality_degree(weights=NULL),           # degree centrality
+         closeness = centrality_closeness(weights=NULL),     # closeness centrality
+         betweenness = centrality_betweenness(weights=NULL)) # betweenness centrality
+
+ny_dual <- ny_dual |>
+  mutate(degree = centrality_degree(weights=NULL),           # degree centrality
+         closeness = centrality_closeness(weights=NULL),     # closeness centrality
+         betweenness = centrality_betweenness(weights=NULL)) # betweenness centrality
+```
+
+```{r}
+# dual graphs
+zh_nodes_dual <- zh_dual |> 
+  activate(nodes) |> 
+  data.frame() |> 
+  mutate(name=as.numeric(name))
+
+ny_nodes_dual <- ny_dual |> 
+  activate(nodes) |> 
+  data.frame() |> 
+  mutate(name=as.numeric(name))
+```
+
+```{r}
+sf_streets_zh_dual <- shp_street_zh |>
+  mutate(FID = id-1) |>
+  left_join(zh_nodes_dual, by=c("FID"="name"))
+
+sf_streets_ny_dual <- shp_street_ny |>
+  mutate(FID = id-1) |>
+  left_join(ny_nodes_dual, by=c("FID"="name"))
+```
+
+
+```{r}
+zh_plot_dual <- ggplot() + 
+  geom_sf(data=sf_streets_zh_dual, aes(col=as.factor(degree))) +
+  scale_color_brewer(palette="YlOrRd") +
+  labs(title="Zurich: Dual graph", col="degree centrality") +
+  theme_dark() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ny_plot_dual <- ggplot() + 
+  geom_sf(data=sf_streets_ny_dual, aes(col=as.factor(degree))) +
+  scale_color_brewer(palette="YlOrRd") +
+  labs(title="New York: Dual graph", col="degree centrality") +
+  theme_dark()
+
+zh_plot_dual
+ny_plot_dual
+```
+
+```{r}
+zh_plot_dual <- ggplot() + 
+  geom_sf(data=sf_streets_zh_dual, aes(col=closeness)) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 0.00004) +
+  labs(title="Zurich: Dual graph", col="closeness centrality") +
+  theme_dark() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ny_plot_dual <- ggplot() + 
+  geom_sf(data=sf_streets_ny_dual, aes(col=closeness)) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 0.3) +
+  labs(title="New York: Dual graph", col="closeness centrality") +
+  theme_dark()
+
+zh_plot_dual
+ny_plot_dual 
+```
+
+```{r}
+
+zh_plot_dual <- ggplot() + 
+  geom_sf(data=sf_streets_zh_dual, aes(col=betweenness)) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 300000) +
+  labs(title="Zurich: Dual graph", col="betweenness centrality") +
+  theme_dark() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ny_plot_dual <- ggplot() + 
+  geom_sf(data=sf_streets_ny_dual, aes(col=betweenness)) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 1000000) +
+  labs(title="New York: Dual graph", col="betweenness centrality") +
+  theme_dark()
   
+
+zh_plot_dual
+ny_plot_dual 
 ```
 
-```{r undirected unweighted street graph ny}
-edges_ny <- csv_street_ny |>
-  select(s, e, seg_length) |>
-  as_tibble()
+## 2.1.3 Undirected Weighted Street Graph
 
-graph_ny <- tbl_graph(edges_ny, directed = F)
+```{r}
+zh_street_weighted <- zh_street |>
+  mutate(degree = centrality_degree(weights=weight),           # degree centrality
+         closeness = centrality_closeness(weights=weight),     # closeness centrality
+         betweenness = centrality_betweenness(weights=weight)) # betweenness centrality
 
-nodes_ny <- union(edges_ny$s,edges_ny$e)
-
-graph <- edges_ny |> ggraph(layout = 'kk') +
-  geom_edge_link() +
-  geom_node_point(size = 1, colour = "steelblue") +
-  theme_graph()
-```
-Note the outliers on the right hand side with no connection to the graph
-
-## 2.1.2 Undirected Weighted Street Graph
-
-```{r Undirected Weighted Street Graph NY}
-edges_ny |>
-  ggraph(layout = 'kk') +
-  geom_edge_link(aes(width = edges_ny$seg_length)) +
-  geom_node_point(size = 1, colour = "steelblue") +
-  geom_node_text(aes(label = sort(nodes_ny)), colour = "white", vjust = 0.4, size = 0) +
-  theme_graph()
+ny_street_weighted <- ny_street |>
+  mutate(degree = centrality_degree(weights=weight),           # degree centrality
+         closeness = centrality_closeness(weights=weight),     # closeness centrality
+         betweenness = centrality_betweenness(weights=weight)) # betweenness centrality
 ```
 
-```{r Undirected Weighted Street Graph ZH}
-edges_zh |>
-  ggraph(layout = 'kk') +
-  geom_edge_link(aes(width = edges_zh$seg_length)) +
-  geom_node_point(size = 1, colour = "steelblue") +
-  geom_node_text(aes(label = sort(nodes_zh)), colour = "white", vjust = 0.4, size = 0) +
-  theme_graph()
+```{r}
+# weighted street graphs
+zh_nodes_street_weighted <- zh_street_weighted |> 
+  activate(nodes) |> 
+  data.frame() |> 
+  mutate(name=as.numeric(name))
+
+ny_nodes_street_weighted <- ny_street_weighted |> 
+  activate(nodes) |> 
+  data.frame() |> 
+  mutate(name=as.numeric(name))
 ```
 
-## 2.2 Centrality Calculation of the Graphs (15 points)
-### 2.2.1 Degree
+```{r}
+sf_nodes_zh_street_weighted <- shp_node_zh |>
+  left_join(zh_nodes_street_weighted, by=c("osmid"="name"))
 
-```{r degree zh unweighted}
-edges_zh |>
-  mutate(centrality = centrality_degree(weights = NULL, mode = "in", normalized=FALSE)) |>
-  ggraph(layout = 'kk') +
-  geom_edge_link() +
-  geom_node_point(size = 1, colour = "steelblue") +
-  theme_graph()
-```
-```{r degree zh weighted}
-
-edges_zh |>
-  mutate(centrality = centrality_degree()) |>
-  ggraph(layout = 'kk') +
-  geom_edge_link(aes(width = edges_zh$seg_length)) +
-  geom_node_point(size = 1, colour = "steelblue") +
-  geom_node_text(aes(label = sort(nodes_zh)), colour = "white", vjust = 0.4, size = 0) +
-  theme_graph()
+sf_nodes_ny_street_weighted <- shp_node_ny |>
+  left_join(ny_nodes_street_weighted, by=c("osmid"="name"))
 ```
 
-```{r degree NY}
-edges_ny |>
-  ggraph(layout = 'kk') +
-  geom_edge_link(aes(width = edges_ny$seg_length)) +
-  geom_node_point(size = 1, colour = "steelblue") +
-  geom_node_text(aes(label = sort(nodes_ny)), colour = "white", vjust = 0.4, size = 0) +
-  theme_graph()
+```{r}
+
+zh_plot_street_weighted <- ggplot() + 
+  geom_sf(data=shp_street_zh, size=0.25) +
+  geom_sf(data=sf_nodes_zh_street_weighted, aes(col=degree), size=0.5) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 175) +
+  labs(title="Zurich: Weighted street graph", col="degree centrality") +
+  theme_dark() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ny_plot_street_weighted <- ggplot() + 
+  geom_sf(data=shp_street_ny, size=0.25) +
+  geom_sf(data=sf_nodes_ny_street_weighted, aes(col=degree), size=0.5) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 1000) +
+  labs(title="New York: Weighted street graph", col="degree centrality") +
+  theme_dark()
+
+
+zh_plot_street_weighted
+ny_plot_street_weighted  
 ```
-### 2.2.2 Closeness
-```{r closeness NY}
-edges_ny |>
-  ggraph(layout = 'kk') +
-  geom_edge_link(aes(width = edges_ny$seg_length)) +
-  geom_node_point(size = 1, colour = "steelblue") +
-  geom_node_text(aes(label = sort(nodes_ny)), colour = "white", vjust = 0.4, size = 0) +
-  theme_graph()
+
+```{r}
+
+zh_plot_street_weighted <- ggplot() + 
+  geom_sf(data=shp_street_zh, size=0.25) +
+  geom_sf(data=sf_nodes_zh_street_weighted, aes(col=closeness), size=0.5) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 0.000001) +
+  labs(title="Zurich: Weighted street graph", col="Closeness centrality") +
+  theme_dark() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ny_plot_street_weighted <- ggplot() + 
+  geom_sf(data=shp_street_ny, size=0.25) +
+  geom_sf(data=sf_nodes_ny_street_weighted, aes(col=closeness), size=0.5) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 0.010) +
+  labs(title="New York: Weighted street graph", col="Closeness centrality") +
+  theme_dark()
+
+
+zh_plot_street_weighted
+ny_plot_street_weighted
 ```
-### 2.2.3 Betweenness
 
 
+```{r}
+zh_plot_street_weighted <- ggplot() + 
+  geom_sf(data=shp_street_zh, size=0.25) +
+  geom_sf(data=sf_nodes_zh_street_weighted, aes(col=betweenness), size=0.5) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 80000) +
+  labs(title="Zurich: Weighted street graph", col="betweenness centrality") +
+  theme_dark() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ny_plot_street_weighted <- ggplot() + 
+  geom_sf(data=shp_street_ny, size=0.25) +
+  geom_sf(data=sf_nodes_ny_street_weighted, aes(col=betweenness), size=0.5) +
+  scale_color_gradient2(low = "yellow", mid = "red", high = "purple", midpoint = 500000) +
+  labs(title="New York: Weighted street graph", col="betweenness centrality") +
+  theme_dark()
 
 
-## 2.3 Visual and Numerical Analytics (30 points)
+zh_plot_street_weighted
+ny_plot_street_weighted
+```
 
 # Task 3: Timer Series Analysis (40 points)
 ## 3.1 Analytics of Air Passenger Data (20 points)
-## 3.2 Analytics of the 2020 Data (20 points)
+
+```{r Explore passengers}
+summary(passengers)
+
+#Visualize Data
+ggplot(passengers,aes(x = date, y = passengers)) + 
+  geom_point() +
+  geom_smooth(method = "lm", col = "red") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 12))
+```
+
+```{r}
+# Create TimeSeries Object
+(passengers_ts <- ts(passengers$passengers, frequency = 12, start = min(year(passengers$date))))
+```
+
+```{r}
+# Convert the month number to month name
+month_names <- month.abb[cycle(passengers_ts)]
+
+# Create an ordered factor for month names with correct ordering
+month_names <- factor(month_names, levels = month.abb)
+
+# Create a boxplot of passenger values grouped by month
+boxplot(passengers_ts ~ month_names,
+        xlab = "Month",
+        ylab = "passengers",
+        main = "Monthly Values")
+```
+
+```{r}
+# Apply ACF to the time series
+acf_passengers <- acf(passengers_ts, lag.max = 12)
+
+# Plot the ACF
+plot(acf_passengers, main = "Autocorrelation Function (ACF) of Passenger Time Series")
+```
+```{r}
+# Apply STL decomposition to the time series
+stl_passengers_add <- stl(passengers_ts, s.window = "periodic")
+stl_passengers_mult <- stl(log(passengers_ts)- min(passengers_ts) + 1, s.window = "periodic")
+
+# Plot the decomposed components
+plot(stl_passengers_add, main = "Additive decomposition")
+
+# Access the components: trend, seasonal, and remainder
+trend_add <- stl_passengers_add$time.series[, "trend"]
+seasonal_add <- stl_passengers_add$time.series[, "seasonal"]
+remainder_add <- stl_passengers_add$time.series[, "remainder"]
+```
+```{r}
+# Plot the decomposed components
+plot(stl_passengers_mult,main = "Multiplicative decomposition")
+
+# Access the components: trend, seasonal, and remainder
+trend_mult <- stl_passengers_mult$time.series[, "trend"]
+seasonal_mult <- stl_passengers_mult$time.series[, "seasonal"]
+remainder_mult <- stl_passengers_mult$time.series[, "remainder"]
+```
+```{r}
+par(mfrow = c(1,2))
+plot(stl_passengers_add$time.series[,3], 
+     col = "blue", main = 'Remainder', ylab = "")
+
+qqnorm(remainder_add, main="Q-Q plot additive model")
+qqline(remainder_add, col="red")
+```
 
 
+```{r}
+par(mfrow = c(1,2))
+plot(stl_passengers_mult$time.series[,3], 
+     col = "blue", main = 'Remainder', ylab = "")
+qqnorm(remainder_mult, main="Q-Q plot multiplicative model")
+qqline(remainder_mult, col="red")
+```
+
+```{r}
+# Apply exponential smoothing
+ets_model <- ets(passengers_ts)
+
+summary(ets_model)
+```
+```{r}
+autoplot(ets_model)
+```
+```{r}
+(forecast_ets_model <- forecast(ets_model) |> autoplot())
+```
+
+```{r}
+arima_model <- auto.arima(passengers_ts)
+
+autoplot(arima_model$residuals)
+```
+
+```{r}
+# Generate forecasts
+forecast_arima <- forecast(arima_model, h = 24)  # Adjust 'h' to the desired number of future time points
+
+# Plot the forecasted values
+plot(forecast_arima, main = "ARIMA Forecast")
+
+# Print the forecasted values
+print(forecast_arima)
+```
+
+
+## 3.3.2 Analytics of the 2020 Data (20 points)
+
+```{r Explore pedestrians}
+summary(pedestrians)
+
+#Visualize Data
+ggplot(pedestrians,aes(x = date, y = total)) + 
+  geom_point() +
+  geom_smooth(method = "gam", col = "red") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 10))
+```
+
+Judging from this plot I assume 1 break in the pedestrians data set. 
+The break occurs around April 2020 when first lock down measures where implemented. 
+
+```{r}
+library(changepoint)
+library(strucchange)
+
+```
+
+```{r}
+# Create Timeseries object
+pedestrian_ts <- ts(pedestrians$total, frequency = 365, start = min(date(pedestrians$date)))
+```
+
+```{r}
+#changes in mean, variance & mean variance
+cp_mean <- cpt.mean(pedestrian_ts)
+cp_var <- cpt.var(pedestrian_ts)
+cp_var_mean <- cpt.meanvar(pedestrian_ts)
+
+# Visualize
+par(mfrow=c(3,1))
+plot(cp_mean, main="Mean")
+plot(cp_var, main="Variance")
+plot(cp_var_mean, main="Variance and mean")
+
+breakpoints <- cp_mean@cpts
+print(breakpoints)
+
+breakpoints <- cp_var@cpts
+print(breakpoints)
+
+
+breakpoints <- cp_var_mean@cpts
+print(breakpoints)
+
+```
+with the chanepoint library and methods we can find one breakpoint at index = 14 (May 24th) 
+
+```{r}
+breakpoints <- 144
+
+ggplot(pedestrians) +
+  geom_line(aes(x = id, y = total)) +
+  geom_vline(xintercept = breakpoints, color = "red") +
+  ylab("Pedestrians") 
+  
+```
+
+
+```{r}
+# use strucchange to find breakpoints
+strucchange <- breakpoints(pedestrian_ts ~ 1, breaks=5)
+summary(strucchange)
+plot(strucchange)
+```
+```{r}
+breakpoints <- strucchange$breakpoints
+
+ggplot(pedestrians) +
+  geom_line(aes(x = id, y = total)) +
+  geom_vline(xintercept = breakpoints, color = "red") +
+  ylab("Pedestrians") 
+  
+```
+
+With Strucchange we find 3 breakpoints. At day 75 (March 16th), day 134 (May 14th) and day 282 (September 10th).
+
+```{r}
+
+pedestrian_ts <- ts(pedestrians$total, frequency = 1)
+breakpoints <- c(134, 365)
+
+# Loop (initally all breakpoints were used)
+for (i in 1:length(breakpoints)) {
+  # Subset the data at each breakpoint
+  subset_data <- pedestrians$total[1:breakpoints[i]]
+  
+  # Convert the subset to a time series
+  subset_ts <- ts(subset_data, frequency = 1)
+  
+  # Perform autocorrelation test on the subset
+  acf_result <- forecast::Acf(subset_ts)
+  
+  # Plot the autocorrelation function
+  plot(acf_result, main = paste("Autocorrelation - Subset", i))
+}
+```
 
